@@ -1,0 +1,8 @@
+torch
+transformers
+black
+human-eval
+numpy
+scikit-learn
+pyarrow
+pytest
