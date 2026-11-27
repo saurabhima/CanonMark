@@ -50,3 +50,27 @@ def test_legacy_runs_warn_and_always_on_needs_nothing(tmp_path):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         make_detector(wm)                               # nothing to verify, no warning
+
+
+def test_weighted_detector_null_is_calibrated(tmp_path):
+    """Weights depend only on the canonical context, so z_w stays N(0,1) on human code."""
+    import statistics
+    from canonmark.data import load_humaneval, load_mbpp
+    from canonmark.detect import detect
+    from canonmark.keyed import KeyedGreen
+    torch.manual_seed(0)
+    vocab = SwitchVocab.build([["for", "in", "if", "return", "v0", "v1", "len", "==", "+"]] * 3)
+    sw = LearnedSwitch(build_switch_net(len(vocab.itos), 3), vocab, threshold=0.3)
+    progs = [p["reference"] for p in load_humaneval()] + [p["reference"] for p in load_mbpp("test")]
+    zs = [detect(c, KeyedGreen(f"w{k}", 0.5, 3), sw, weighted=True).z for k in range(6) for c in progs]
+    m, s = statistics.mean(zs), statistics.pstdev(zs)
+    assert abs(m) < 0.1 and 0.85 < s < 1.15, (m, s)
+
+
+def test_weighted_equals_unweighted_for_always_on():
+    from canonmark.data import load_humaneval
+    from canonmark.detect import detect
+    from canonmark.keyed import KeyedGreen
+    g = KeyedGreen("k", 0.5, 3)
+    for p in load_humaneval()[:30]:
+        assert abs(detect(p["reference"], g).z - detect(p["reference"], g, weighted=True).z) < 1e-9

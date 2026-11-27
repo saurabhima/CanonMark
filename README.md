@@ -41,8 +41,10 @@ What the tests check:
 ```bash
 M=Qwen/Qwen2.5-Coder-1.5B-Instruct
 
-# 1. learned switch: supervised warm-up on LLM entropy over MBPP-train (minutes), optionally RL (GPU)
-python scripts/train_switch.py    --model $M --dataset mbpp-train --context_width 3 --out outputs/switch_k3
+# 1. learned switch, trained on the model's own MBPP-train code with the "flippable" label, then RL (GPU)
+python scripts/generate.py --model $M --dataset mbpp-train --method none --out outputs/mbpp_train_none.jsonl
+python scripts/train_switch.py --model $M --dataset mbpp-train --programs outputs/mbpp_train_none.jsonl \
+    --label flippable --flip_delta 5 --context_width 3 --out outputs/switch_k3
 python scripts/train_switch_rl.py --model $M --init outputs/switch_k3 --dataset mbpp-train --out outputs/switch_k3_rl
 
 # 2. generate: unwatermarked reference, ours, hybrid, raw-token KGW baseline
@@ -129,6 +131,8 @@ All scripts run on CPU (slowly) and on a single GPU. On CPU, `Qwen/Qwen2.5-Coder
 - **Why keyed HMAC and not a learned green list (CodeTracer)?** For code written without the key, every scored position is green with probability exactly γ, so the z-test is valid however predictable the code is. CodeTracer's green list is "the plausible half" learned from code and has no key, so human code can score above chance, and anyone holding the network can detect or forge the watermark.
 - **Why does RL only learn the switch?** The green lists are fixed by the key, so the only decision left is whether to watermark a context. That is a Bernoulli policy, trained with group-normalised rewards: tests pass, clipped z, and +1/−3 per green/red carrier. This avoids CodeTracer's Gumbel-Top-k and straight-through estimators.
 - **Context width k.** In raw-token schemes, a larger k makes edits more damaging, because each edit breaks k+1 n-grams. Here formatting, comment stripping and renaming don't change the canonical stream at all, so k is a free choice for those edits. A larger k makes green lists harder to steal and reduces the per-key bias of the null: measured per-key mean z is ±0.15 at k=3, vs ±0.39 at k=1 and up to ±0.8 for raw-token KGW on HumanEval.
+- **Switch training label.** `--label flippable` (default) marks a carrier position as useful when the model's top choice is a carrier **and** at least two different carriers are within δ of the top logit, i.e. when the keyed bias can change which carrier gets written. `--label entropy` is the CodeTracer-style alternative (next-token entropy ≥ 1.2). On MBPP-train with the 0.5B model, 40% of carriers are flippable at δ=5 but only 21% are high-entropy, and 69% of the flippable positions are *not* high-entropy, so the entropy label misses most usable positions. Pass the δ you will generate with as `--flip_delta`.
+- **Weighted detection** (`--weighted_detection` in `evaluate.py` / `sweep.py`). This weights each switched-on carrier by the switch's probability: z_w = Σw(g−γ)/√(γ(1−γ)Σw²). It stays calibrated, because the weights depend only on the canonical context. It only helps if the switch's confidence tracks where signal really is: with the entropy-trained switch it did not help on our CPU smoke runs (AUROC 0.788 → 0.778, within noise). The sweep writes these results to `*_weighted` files; `compare.py` and `plot_sweep.py` read them with `--suffix _weighted`.
 - **Switch fingerprint guard.** Detection must use exactly the switch that generation used. Every run file records the SHA-256 of its switch (`switch_sha256`). `evaluate.py` stops, and `sweep.py` skips and lists the run, if the switch at that path has changed since, for example after retraining into the same folder. Runs from before the guard existed get a warning instead. Give each trained switch its own folder.
 - **The signature is never scored.** Lexemes inside `def …:` / `class …:` headers come from the prompt, so the detector ignores them.
 

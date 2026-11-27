@@ -41,17 +41,23 @@ def p_value(z: float) -> float:
 
 def detect(code: str, green: KeyedGreen, switch: SwitchPolicy | None = None,
            ignore_repeated: bool = True, z_threshold: float = 4.0,
-           return_marks: bool = False) -> Detection:
+           return_marks: bool = False, weighted: bool = False) -> Detection:
     """Score a piece of code. `code` should be just the code (see canon.extract_code).
 
     ignore_repeated: count each (context, lexeme) pair once. Repeats are perfectly
     correlated under the null hypothesis and would otherwise inflate z.
+    weighted: weight each switched-on carrier by the switch's confidence w (its
+    probability; 1 for AlwaysOn) and use z_w = sum w(g - gamma) / sqrt(gamma(1-gamma) sum w^2).
+    The weights depend only on the canonical context, not on the key, so under the
+    null hypothesis z_w is still exactly standardised; it gains power when
+    confident positions really carry more signal.
     """
     switch = switch or AlwaysOn()
     lex = canonical_stream(code)
     tx = texts(lex)
     seen = set()
     n = g = 0
+    sw_num = sw_den = 0.0
     marks = []
     for j, lx in enumerate(lex):
         if not lx.scored:
@@ -67,9 +73,16 @@ def detect(code: str, green: KeyedGreen, switch: SwitchPolicy | None = None,
         is_g = green.is_green(ctx, lx.text)
         n += 1
         g += is_g
+        if weighted:
+            w = switch.weight(ctx)
+            sw_num += w * (is_g - green.gamma)
+            sw_den += w * w
         if return_marks:
             marks.append((lx.text, lx.start, lx.end, is_g, ctx))
-    z = z_score(g, n, green.gamma)
+    if weighted:
+        z = sw_num / math.sqrt(green.gamma * (1 - green.gamma) * sw_den) if sw_den > 0 else 0.0
+    else:
+        z = z_score(g, n, green.gamma)
     return Detection(z, p_value(z), n, g, z > z_threshold, marks)
 
 

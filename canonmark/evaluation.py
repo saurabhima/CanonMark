@@ -29,16 +29,18 @@ def _tokenizer(name: str):
     return AutoTokenizer.from_pretrained(name)
 
 
-def make_detector(wm: dict, source: str | None = None):
+def make_detector(wm: dict, source: str | None = None, weighted: bool = False):
     """code -> z, using the run's own method, key and settings.
 
+    weighted: use the switch-confidence-weighted z for the canonical channel
+    (canonmark and hybrid; no effect on KGW).
     Raises SwitchMismatchError if the run's switch file changed after generation."""
     verify_switch(wm, source)
     m = wm["method"]
     if m == "canonmark":
         green = KeyedGreen(wm["key"], wm["gamma"], wm["context_width"])
         sw = load_switch(wm.get("switch"))
-        return lambda code: detect(code, green, sw).z
+        return lambda code: detect(code, green, sw, weighted=weighted).z
     from .generate import KGWScheme, hybrid_detect, kgw_detect
     tok = _tokenizer(wm["model"])
     if m == "kgw":
@@ -48,7 +50,7 @@ def make_detector(wm: dict, source: str | None = None):
         green = KeyedGreen(wm["key"], wm["gamma"], wm["context_width"])
         scheme = KGWScheme(wm["key"] + "/surface", len(tok), wm["gamma"])
         sw = load_switch(wm.get("switch"))
-        return lambda code: hybrid_detect(code, tok, green, scheme, sw)["z"]
+        return lambda code: hybrid_detect(code, tok, green, scheme, sw, weighted=weighted)["z"]
     raise ValueError(m)
 
 

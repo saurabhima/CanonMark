@@ -19,6 +19,10 @@ class SwitchPolicy:
     def on(self, ctx: tuple[str, ...]) -> bool:  # pragma: no cover - interface
         raise NotImplementedError
 
+    def weight(self, ctx: tuple[str, ...]) -> float:
+        """Confidence that this context carries signal (used by the weighted detector)."""
+        return 1.0
+
 
 class AlwaysOn(SwitchPolicy):
     def on(self, ctx):
@@ -91,19 +95,22 @@ class LearnedSwitch(SwitchPolicy):
         self.net = net.eval()
         self.vocab = vocab
         self.threshold = threshold
-        self._cache: dict[tuple, bool] = {}
+        self._cache: dict[tuple, float] = {}
+
+    def prob(self, ctx) -> float:
+        p = self._cache.get(ctx)
+        if p is None:
+            torch = _torch()
+            with torch.no_grad():
+                p = torch.sigmoid(self.net(torch.tensor([self.vocab.encode(ctx)]))).item()
+            self._cache[ctx] = p
+        return p
 
     def on(self, ctx):
-        hit = self._cache.get(ctx)
-        if hit is not None:
-            return hit
-        torch = _torch()
-        with torch.no_grad():
-            ids = torch.tensor([self.vocab.encode(ctx)])
-            p = torch.sigmoid(self.net(ids)).item()
-        res = p > self.threshold
-        self._cache[ctx] = res
-        return res
+        return self.prob(ctx) > self.threshold
+
+    def weight(self, ctx):
+        return self.prob(ctx)
 
     def save(self, path: str | Path):
         torch = _torch()

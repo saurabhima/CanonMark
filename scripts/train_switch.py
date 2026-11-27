@@ -1,8 +1,9 @@
 """Supervised warm-up of the learned switch (analogous to CodeTracer's SFT stage).
 
-Label: at each scored canonical position of real code, is the LLM uncertain?
-(entropy of its next-token distribution >= threshold, default 1.2 as in
-CodeTracer/SWEET). Input: only the k previous canonical lexemes, so the
+Label (default "flippable"): at each scored canonical position, could the keyed
+bias change which carrier is written? True when the model's top choice is a
+carrier and >= 2 different carriers are within delta of the top logit.
+Alternative "entropy": next-token entropy >= 1.2, as in CodeTracer/SWEET. Input: only the k previous canonical lexemes, so the
 detector can recompute the decision without the LLM.
 
 Example:
@@ -26,13 +27,19 @@ from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: E402
 
 from canonmark.canon import canonical_stream, texts  # noqa: E402
 from canonmark.data import load  # noqa: E402
+from canonmark.generate import CanonLogitsProcessor  # noqa: E402
 from canonmark.keyed import KeyedGreen  # noqa: E402
-from canonmark.switch import LearnedSwitch, SwitchVocab, build_switch_net  # noqa: E402
+from canonmark.switch import AlwaysOn, LearnedSwitch, SwitchVocab, build_switch_net  # noqa: E402
 
 
-def collect(model, tok, problems, codes, k, device, max_len=2048):
-    """Return [(task_id, ctx, entropy)] for every scored lexeme."""
+def collect(model, tok, problems, codes, k, device, max_len=2048, flip_delta=5.0, flip_top_k=20):
+    """Return [(task_id, ctx, entropy, flippable)] for every scored lexeme.
+
+    flippable: the model's top choice at this position is a carrier AND at least two
+    different carriers are within flip_delta of the top logit, i.e. the keyed bias can
+    change which carrier gets written. Uses the same candidate analysis as generation."""
     ctxer = KeyedGreen("unused", 0.5, k)          # only for its context() helper
+    helper = CanonLogitsProcessor(tok, ctxer, AlwaysOn(), top_k=flip_top_k)
     out = []
     for p, code in zip(problems, codes):
         head = tok.apply_chat_template([{"role": "user", "content": p["prompt"]}], tokenize=False,
@@ -57,7 +64,13 @@ def collect(model, tok, problems, codes, k, device, max_len=2048):
                 t += 1
             if t == 0 or t >= len(offs):
                 continue
-            out.append((p["task_id"], ctxer.context(tx, j), float(ent[t - 1])))
+            row = logits[t - 1].cpu()
+            prefix = full[base:offs[t][0]]                       # code written before this token
+            dec = helper._decisions(prefix, row, helper.switch)
+            top = float(row.max())
+            near = {lexeme for tid, carrier, _, lexeme in dec if carrier and float(row[tid]) >= top - flip_delta}
+            flippable = bool(dec and dec[0][1] and len(near) >= 2)
+            out.append((p["task_id"], ctxer.context(tx, j), float(ent[t - 1]), flippable))
     return out
 
 
@@ -68,6 +81,11 @@ def main():
     ap.add_argument("--programs", help="jsonl of generations (task_id, code); default: reference solutions")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--context_width", type=int, default=3)
+    ap.add_argument("--label", choices=["flippable", "entropy"], default="flippable",
+                    help="flippable: >=2 carriers within --flip_delta of the top logit (default); "
+                         "entropy: next-token entropy >= --entropy_threshold (CodeTracer-style)")
+    ap.add_argument("--flip_delta", type=float, default=5.0, help="use the delta you generate with")
+    ap.add_argument("--flip_top_k", type=int, default=20)
     ap.add_argument("--entropy_threshold", type=float, default=1.2)
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--lr", type=float, default=2e-3)
@@ -91,10 +109,18 @@ def main():
     tok = AutoTokenizer.from_pretrained(a.model)
     model = AutoModelForCausalLM.from_pretrained(
         a.model, dtype=torch.bfloat16 if device == "cuda" else torch.float32).to(device).eval()
-    data = collect(model, tok, [p for p, _ in pairs], [c for _, c in pairs], a.context_width, device)
+    raw = collect(model, tok, [p for p, _ in pairs], [c for _, c in pairs], a.context_width, device,
+                  flip_delta=a.flip_delta, flip_top_k=a.flip_top_k)
     del model
-    pos_rate = sum(e >= a.entropy_threshold for _, _, e in data) / len(data)
-    print(f"{len(data)} scored positions from {len(pairs)} programs; uncertain (label 1): {pos_rate:.1%}")
+    ent_rate = sum(e >= a.entropy_threshold for _, _, e, _ in raw) / len(raw)
+    flip_rate = sum(f for _, _, _, f in raw) / len(raw)
+    both = sum(f and e >= a.entropy_threshold for _, _, e, f in raw) / max(1, sum(f for *_, f in raw))
+    print(f"{len(raw)} scored positions from {len(pairs)} programs; "
+          f"uncertain (entropy>={a.entropy_threshold}): {ent_rate:.1%}; flippable (delta={a.flip_delta:g}): "
+          f"{flip_rate:.1%}; flippable positions that are also high-entropy: {both:.1%}")
+    print(f"training on label = {a.label}")
+    # (task, ctx, label-as-float)
+    data = [(t, c, float(f) if a.label == "flippable" else float(e >= a.entropy_threshold)) for t, c, e, f in raw]
 
     # split by problem so validation contexts come from unseen programs
     tids = sorted({t for t, _, _ in data})
@@ -107,7 +133,7 @@ def main():
 
     def tensors(rows):
         x = torch.tensor([vocab.encode(c) for _, c, _ in rows])
-        y = torch.tensor([float(e >= a.entropy_threshold) for _, _, e in rows])
+        y = torch.tensor([lab for _, _, lab in rows])
         return x, y
 
     xtr, ytr = tensors(train)

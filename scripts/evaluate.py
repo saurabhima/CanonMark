@@ -48,6 +48,8 @@ def main():
     ap.add_argument("--negatives", help="unwatermarked run jsonl (same model)")
     ap.add_argument("--no_exec", action="store_true", help="skip running tests")
     ap.add_argument("--attacks", nargs="*", default=list(ATTACKS))
+    ap.add_argument("--weighted_detection", action="store_true",
+                    help="weight canonical carriers by switch confidence (canonmark / hybrid)")
     ap.add_argument("--n_boot", type=int, default=1000, help="bootstrap rounds for AUROC 95%% CIs (0 = off)")
     ap.add_argument("--out")
     a = ap.parse_args()
@@ -68,7 +70,7 @@ def main():
         res, passed = functionality(rows, probs, not a.no_exec)
         if base_pass and passed:
             res["mcnemar_vs_unwatermarked"] = mcnemar(base_pass, passed)
-        res.update(robustness(rows, neg_rows, probs, make_detector(wm, source=path), a.attacks, n_boot=a.n_boot))
+        res.update(robustness(rows, neg_rows, probs, make_detector(wm, source=path, weighted=a.weighted_detection), a.attacks, n_boot=a.n_boot))
         results[name] = res
 
     print(json.dumps(results, indent=1))

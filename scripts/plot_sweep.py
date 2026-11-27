@@ -89,10 +89,10 @@ def place_labels(fig, ax, labels, points, segs, base):
         placed.append(best.get_window_extent(r))
 
 
-def load(sweep: Path):
-    rows = list(csv.DictReader(open(sweep / "sweep_summary.csv")))
+def load(sweep: Path, sfx: str = ""):
+    rows = list(csv.DictReader(open(sweep / f"sweep_summary{sfx}.csv")))
     base = None
-    res = sweep / "sweep_results.json"
+    res = sweep / f"sweep_results{sfx}.json"
     if res.is_file():
         base = json.loads(res.read_text()).get("unwatermarked", {}).get("pass@1")
     return rows, base
@@ -104,10 +104,11 @@ def main():
     ap.add_argument("--panels", nargs="+", default=["clean", "all_three"])
     ap.add_argument("--methods", nargs="+", default=["canonmark", "hybrid", "kgw"])
     ap.add_argument("--dataset_label", default="HumanEval")
-    ap.add_argument("--out", help="output path without extension (default: <sweep>/tradeoff)")
+    ap.add_argument("--suffix", default="", help="read sweep files with this suffix, e.g. _weighted")
+    ap.add_argument("--out", help="output path without extension (default: <sweep>/tradeoff<suffix>)")
     a = ap.parse_args()
     sweep = Path(a.sweep)
-    rows, base = load(sweep)
+    rows, base = load(sweep, a.suffix)
 
     plt.rcParams.update({"font.size": 8, "axes.titlesize": 9, "axes.labelsize": 8, "font.family": "sans-serif",
                          "axes.edgecolor": REF, "axes.labelcolor": TEXT, "xtick.color": TEXT2, "ytick.color": TEXT2})
@@ -171,7 +172,7 @@ def main():
     fig.tight_layout(rect=(0, 0.07, 1, 1))
     for ax, labels, points, segs in pending:
         place_labels(fig, ax, labels, points, segs, base)
-    out = Path(a.out) if a.out else sweep / "tradeoff"
+    out = Path(a.out) if a.out else sweep / f"tradeoff{a.suffix}"
     for ext in ("png", "pdf"):
         fig.savefig(out.with_suffix(f".{ext}"), dpi=300, bbox_inches="tight")
     print(f"wrote {out.with_suffix('.png')} and {out.with_suffix('.pdf')}")

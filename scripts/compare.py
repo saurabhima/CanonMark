@@ -46,14 +46,15 @@ def parse():
                     help="negative set: unwatermarked model output (default) or human references")
     ap.add_argument("--n_boot", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--out", help="output prefix (default: <sweep>/compare)")
+    ap.add_argument("--suffix", default="", help="read sweep files with this suffix, e.g. _weighted")
+    ap.add_argument("--out", help="output prefix (default: <sweep>/compare<suffix>)")
     return ap.parse_args()
 
 
-def load_sweep(d: Path):
-    runs = list(csv.DictReader(open(d / "sweep_runs.csv")))
-    z = json.loads((d / "sweep_z.json").read_text())
-    pf = d / "sweep_pass.json"
+def load_sweep(d: Path, sfx: str = ""):
+    runs = list(csv.DictReader(open(d / f"sweep_runs{sfx}.csv")))
+    z = json.loads((d / f"sweep_z{sfx}.json").read_text())
+    pf = d / f"sweep_pass{sfx}.json"
     passes = json.loads(pf.read_text()) if pf.is_file() else None
     groups: dict[tuple[str, float], list[dict]] = {}
     for r in runs:
@@ -144,7 +145,7 @@ def name(cfg):
 def main():
     a = parse()
     d = Path(a.sweep)
-    groups, z, passes = load_sweep(d)
+    groups, z, passes = load_sweep(d, a.suffix)
     pairs = [(parse_cfg(x), parse_cfg(y)) for x, y in a.pair] if a.pair else default_pairs(groups)
     if not pairs:
         raise SystemExit("no pairs to compare (give --pair method:delta method:delta)")
@@ -192,7 +193,7 @@ def main():
                          f"{r['d_pass']:+.3f} [{r['ci95'][0]:+.3f}, {r['ci95'][1]:+.3f}] | {r['p']:.4f} | {r['p_holm']:.4f} |")
     elif passes is None:
         lines += ["", "(No sweep_pass.json: rerun the sweep with --eval_only to add paired Pass@1 comparisons.)"]
-    out = Path(a.out) if a.out else d / "compare"
+    out = Path(a.out) if a.out else d / f"compare{a.suffix}"
     out.with_suffix(".json").write_text(json.dumps(results, indent=1))
     out.with_suffix(".md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))

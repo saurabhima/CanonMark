@@ -72,3 +72,23 @@ def test_hybrid_detector_null(tok):
     m = sum(zs) / len(zs)
     sd = (sum((z - m) ** 2 for z in zs) / len(zs)) ** 0.5
     assert abs(m) < 0.2 and 0.8 < sd < 1.25, (m, sd)
+
+
+def test_decisions_report_carrier_lexemes(tok):
+    """The candidate analysis used for the 'flippable' label names the carrier each token produces."""
+    proc = CanonLogitsProcessor(tok, KeyedGreen("k", 0.5, 3), top_k=len(tok))
+    code = "def f(xs):\n    "
+    scores = torch.full((len(tok),), -100.0)
+    want = {}
+    for word in ("for", "while", "return", "x"):
+        tid = tok(word, add_special_tokens=False)["input_ids"][0]
+        scores[tid] = 0.0
+        want[tid] = word
+    proc.top_k = 4
+    dec = {tid: (carrier, lexeme) for tid, carrier, _, lexeme in proc._decisions(code, scores, proc.switch)}
+    for tid, word in want.items():
+        carrier, lexeme = dec[tid]
+        if word == "x":
+            assert not carrier and lexeme is None          # a new local name is not a carrier
+        else:
+            assert carrier and lexeme == word

@@ -59,6 +59,8 @@ def parse():
     ap.add_argument("--dtype", default="auto")
     ap.add_argument("--attacks", nargs="*", default=list(ATTACKS))
     ap.add_argument("--no_exec", action="store_true", help="skip running tests (no Pass@1 / McNemar)")
+    ap.add_argument("--weighted_detection", action="store_true",
+                    help="weight canonical carriers by switch confidence; results go to *_weighted files")
     ap.add_argument("--n_boot", type=int, default=1000, help="bootstrap rounds for AUROC CIs (0 = off)")
     ap.add_argument("--eval_only", action="store_true", help="only evaluate run files that already exist")
     ap.add_argument("--outdir", required=True)
@@ -128,7 +130,7 @@ def main():
             continue
         rows = read_jsonl(path)
         try:
-            detector = make_detector(rows[0]["wm"], source=str(path))
+            detector = make_detector(rows[0]["wm"], source=str(path), weighted=a.weighted_detection)
         except SwitchMismatchError as e:          # stale run: report it, keep evaluating the others
             print(f"SKIP {name}: {e}", flush=True)
             stale.append(name)
@@ -160,16 +162,17 @@ def main():
     if stale:
         print(f"\n{len(stale)} run(s) skipped because their switch changed after generation: {', '.join(stale)}."
               "\nRegenerate them (delete those run files, or use a new --outdir).", flush=True)
-    (outdir / "sweep_results.json").write_text(json.dumps(results, indent=1))
-    (outdir / "sweep_z.json").write_text(json.dumps(z_store))     # raw per-task z, for re-analysis
-    (outdir / "sweep_pass.json").write_text(json.dumps(pass_store))   # per-task pass/fail (scripts/compare.py)
+    sfx = "_weighted" if a.weighted_detection else ""
+    (outdir / f"sweep_results{sfx}.json").write_text(json.dumps(results, indent=1))
+    (outdir / f"sweep_z{sfx}.json").write_text(json.dumps(z_store))     # raw per-task z, for re-analysis
+    (outdir / f"sweep_pass{sfx}.json").write_text(json.dumps(pass_store))   # per-task pass/fail (scripts/compare.py)
     if not rows_out:
         return
-    with open(outdir / "sweep_runs.csv", "w", newline="") as f:
+    with open(outdir / f"sweep_runs{sfx}.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows_out[0]))
         w.writeheader()
         w.writerows(rows_out)
-    write_summary(rows_out, base, a.attacks, outdir, z_store, a.n_boot)
+    write_summary(rows_out, base, a.attacks, outdir, z_store, a.n_boot, sfx)
 
 
 def _ms(vals):
@@ -179,7 +182,7 @@ def _ms(vals):
     return statistics.mean(vals), (statistics.stdev(vals) if len(vals) > 1 else 0.0)
 
 
-def write_summary(rows, base, attacks, outdir: Path, z_store=None, n_boot: int = 1000):
+def write_summary(rows, base, attacks, outdir: Path, z_store=None, n_boot: int = 1000, sfx: str = ""):
     metric_cols = ["pass@1", "delta_pass@1", "syntax_error_rate", "mean_z_pos"] + [f"auroc_{t}" for t in ["clean"] + attacks]
     groups: dict[tuple, list] = {}
     for r in rows:
@@ -200,7 +203,7 @@ def write_summary(rows, base, attacks, outdir: Path, z_store=None, n_boot: int =
                     lo, hi = (ci or [None, None])
             s[f"auroc_{t}_ci_lo"], s[f"auroc_{t}_ci_hi"] = lo, hi
         summary.append(s)
-    with open(outdir / "sweep_summary.csv", "w", newline="") as f:
+    with open(outdir / f"sweep_summary{sfx}.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(summary[0]))
         w.writeheader()
         w.writerows(summary)
@@ -227,7 +230,9 @@ def write_summary(rows, base, attacks, outdir: Path, z_store=None, n_boot: int =
     lines += ["", "Mean ± sd over keys; [..] = 95% problem-level bootstrap CI of the key-averaged AUROC.",
               "AUROC against the same model's unwatermarked output.",
               "McNemar: exact paired test of Pass@1 per key against the unwatermarked run."]
-    (outdir / "sweep_summary.md").write_text("\n".join(lines) + "\n")
+    if sfx:
+        lines.append("Detection: canonical carriers weighted by switch confidence (--weighted_detection).")
+    (outdir / f"sweep_summary{sfx}.md").write_text("\n".join(lines) + "\n")
     print("\n" + "\n".join(lines))
 
 

@@ -74,8 +74,9 @@ class CanonLogitsProcessor(_CodeRegionProcessor):
         # a list gives each batch row its own policy (used by RL: one sampled policy per rollout)
         return self.switch[row] if isinstance(self.switch, (list, tuple)) else self.switch
 
-    def _decisions(self, code: str, scores_row, switch) -> list[tuple[int, bool, bool]]:
-        """For each top-k candidate: (token id, produces a new carrier?, green and switched on?)."""
+    def _decisions(self, code: str, scores_row, switch) -> list[tuple[int, bool, bool, str | None]]:
+        """For each top-k candidate, in descending score order:
+        (token id, produces a new carrier?, green and switched on?, that carrier's lexeme or None)."""
         lex, cps = canonicalize(code)
         if cps:
             cp = cps[-1]
@@ -89,7 +90,7 @@ class CanonLogitsProcessor(_CodeRegionProcessor):
         for tid in cand:
             ts = self.tokstr(tid)
             if not ts or "`" in ts or "�" in ts:
-                out.append((tid, False, False))
+                out.append((tid, False, False, None))
                 continue
             new_tail, _ = canonicalize(tail_src + ts, st, off, base_n)
             i, m = 0, min(len(new_tail), len(old_tail))
@@ -97,7 +98,7 @@ class CanonLogitsProcessor(_CodeRegionProcessor):
                 i += 1
             j = next((j for j in range(i, len(new_tail)) if new_tail[j].scored), None)
             if j is None:
-                out.append((tid, False, False))
+                out.append((tid, False, False, None))
                 continue
             seq = base_texts + [x.text for x in new_tail[:j]]      # only the first new carrier counts
             ctx = self.green.context(seq, len(seq))
@@ -105,7 +106,7 @@ class CanonLogitsProcessor(_CodeRegionProcessor):
             is_green = on and self.green.is_green(ctx, new_tail[j].text)
             if tid == self.trace_token:
                 self.trace.append((ctx, new_tail[j].text, on, is_green))
-            out.append((tid, True, is_green))
+            out.append((tid, True, is_green, new_tail[j].text))
         return out
 
     def _bias_row(self, gen_ids, scores_row, row: int = 0):
@@ -120,7 +121,7 @@ class CanonLogitsProcessor(_CodeRegionProcessor):
         if self.carrier_gate and not (dec and dec[0][1]):
             return False
         biased = False
-        for tid, carrier, green in dec:
+        for tid, carrier, green, _ in dec:
             if carrier and green:
                 scores_row[tid] += self.delta
                 biased = True
@@ -231,7 +232,7 @@ class HybridLogitsProcessor(CanonLogitsProcessor):
         prev = int(gen_ids[-1])
         carrier_step = bool(dec and dec[0][1])
         biased = False
-        for tid, carrier, green in dec:
+        for tid, carrier, green, _ in dec:
             if carrier and green and (carrier_step or not self.carrier_gate):
                 scores_row[tid] += self.delta
                 biased = True
@@ -242,12 +243,12 @@ class HybridLogitsProcessor(CanonLogitsProcessor):
 
 
 def hybrid_detect(code: str, tokenizer, green: KeyedGreen, scheme: KGWScheme, switch: SwitchPolicy | None = None,
-                  ignore_repeated: bool = True) -> dict:
+                  ignore_repeated: bool = True, weighted: bool = False) -> dict:
     """z of each channel on disjoint positions, combined with Stouffer.
     Surface positions = LLM tokens that do not start a scored canonical lexeme."""
     from .canon import canonical_stream
     from .detect import detect, p_value, stouffer, z_score
-    canon = detect(code, green, switch, ignore_repeated)
+    canon = detect(code, green, switch, ignore_repeated, weighted=weighted)
     starts = sorted(l.start for l in canonical_stream(code) if l.scored)
     enc = tokenizer(code, add_special_tokens=False, return_offsets_mapping=True)
     ids, offs = enc["input_ids"], enc["offset_mapping"]
