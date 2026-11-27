@@ -30,7 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from canonmark.attacks import ATTACKS  # noqa: E402
 from canonmark.data import load  # noqa: E402
-from canonmark.evaluation import functionality, make_detector, mcnemar, read_jsonl, robustness  # noqa: E402
+from canonmark.evaluation import (functionality, key_averaged_auroc_ci, make_detector, mcnemar,  # noqa: E402
+                                  read_jsonl, robustness)
 from canonmark.pipeline import wm_config  # noqa: E402
 
 
@@ -57,6 +58,7 @@ def parse():
     ap.add_argument("--dtype", default="auto")
     ap.add_argument("--attacks", nargs="*", default=list(ATTACKS))
     ap.add_argument("--no_exec", action="store_true", help="skip running tests (no Pass@1 / McNemar)")
+    ap.add_argument("--n_boot", type=int, default=1000, help="bootstrap rounds for AUROC CIs (0 = off)")
     ap.add_argument("--eval_only", action="store_true", help="only evaluate run files that already exist")
     ap.add_argument("--outdir", required=True)
     return ap.parse_args()
@@ -115,6 +117,7 @@ def main():
     print(f"unwatermarked: {base}", flush=True)
     results = {"unwatermarked": base}
     rows_out = []
+    z_store = {}
     for name, wm in plan[1:]:
         path = rundir / f"{name}.jsonl"
         if not path.is_file():
@@ -124,7 +127,9 @@ def main():
         res, passed = functionality(rows, probs, not a.no_exec)
         if base_pass and passed:
             res["mcnemar_vs_unwatermarked"] = mcnemar(base_pass, passed)
-        res.update(robustness(rows, neg_rows, probs, make_detector(rows[0]["wm"]), a.attacks))
+        res.update(robustness(rows, neg_rows, probs, make_detector(rows[0]["wm"]), a.attacks,
+                              n_boot=a.n_boot, keep_z=True))
+        z_store[name] = {t: res[t].pop("z") for t in ["clean"] + a.attacks}
         results[name] = res
         mc = res.get("mcnemar_vs_unwatermarked", {})
         rec = {"run": name, "method": wm["method"], "delta": wm["delta"], "key": wm["key"],
@@ -134,6 +139,8 @@ def main():
         for t in ["clean"] + a.attacks:
             m = res[t].get("vs_model") or res[t]["vs_human"]
             rec[f"auroc_{t}"] = m.get("auroc")
+            ci = m.get("auroc_ci95") or [None, None]
+            rec[f"auroc_{t}_lo"], rec[f"auroc_{t}_hi"] = ci
             rec[f"tpr5_{t}"] = m.get("tpr@5%fpr")
         rec["mean_z_pos"] = (res["clean"].get("vs_model") or res["clean"]["vs_human"]).get("mean_z_pos")
         rows_out.append(rec)
@@ -141,13 +148,14 @@ def main():
               f"AUROC clean {rec['auroc_clean']}  all-attacks {rec.get('auroc_all_three')}", flush=True)
 
     (outdir / "sweep_results.json").write_text(json.dumps(results, indent=1))
+    (outdir / "sweep_z.json").write_text(json.dumps(z_store))     # raw per-task z, for re-analysis
     if not rows_out:
         return
     with open(outdir / "sweep_runs.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows_out[0]))
         w.writeheader()
         w.writerows(rows_out)
-    write_summary(rows_out, base, a.attacks, outdir)
+    write_summary(rows_out, base, a.attacks, outdir, z_store, a.n_boot)
 
 
 def _ms(vals):
@@ -157,7 +165,7 @@ def _ms(vals):
     return statistics.mean(vals), (statistics.stdev(vals) if len(vals) > 1 else 0.0)
 
 
-def write_summary(rows, base, attacks, outdir: Path):
+def write_summary(rows, base, attacks, outdir: Path, z_store=None, n_boot: int = 1000):
     metric_cols = ["pass@1", "delta_pass@1", "syntax_error_rate", "mean_z_pos"] + [f"auroc_{t}" for t in ["clean"] + attacks]
     groups: dict[tuple, list] = {}
     for r in rows:
@@ -169,6 +177,14 @@ def write_summary(rows, base, attacks, outdir: Path):
         for c in metric_cols:
             m, sd = _ms([r[c] for r in rs])
             s[f"{c}_mean"], s[f"{c}_sd"] = (round(m, 4) if m is not None else None), (round(sd, 4) if sd is not None else None)
+        for t in ["clean"] + attacks:              # problem-level bootstrap CI of the key-averaged AUROC
+            lo = hi = None
+            if z_store and n_boot > 0:
+                zr = [z_store[r["run"]][t] for r in rs if r["run"] in z_store]
+                if zr and all(z["neg_model"] for z in zr):
+                    _, ci = key_averaged_auroc_ci(zr, "neg_model", n_boot)
+                    lo, hi = (ci or [None, None])
+            s[f"auroc_{t}_ci_lo"], s[f"auroc_{t}_ci_hi"] = lo, hi
         summary.append(s)
     with open(outdir / "sweep_summary.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(summary[0]))
@@ -179,7 +195,11 @@ def write_summary(rows, base, attacks, outdir: Path):
         m, sd = s[f"{c}_mean"], s[f"{c}_sd"]
         if m is None:
             return "–"
-        return (f"{m:+.3f}" if signed else f"{m:.3f}") + (f" ± {sd:.3f}" if s["n_keys"] > 1 else "")
+        txt = (f"{m:+.3f}" if signed else f"{m:.3f}") + (f" ± {sd:.3f}" if s["n_keys"] > 1 else "")
+        lo, hi = s.get(f"{c}_ci_lo".replace("_mean", "")), s.get(f"{c}_ci_hi")
+        if c.startswith("auroc_") and lo is not None:
+            txt += f" [{lo:.2f}, {hi:.2f}]"
+        return txt
 
     cols = ["clean"] + attacks
     lines = [f"Unwatermarked: Pass@1 {base.get('pass@1', '–')}, syntax errors {base['syntax_error_rate']}", "",
@@ -190,7 +210,8 @@ def write_summary(rows, base, attacks, outdir: Path):
         lines.append(f"| {s['method']} | {s['delta']:g} | {s['n_keys']} | {cell(s, 'pass@1')} | "
                      f"{cell(s, 'delta_pass@1', True)} | {s['keys_sig_p<0.05']}/{s['n_keys']} | {cell(s, 'mean_z_pos')} | "
                      + " | ".join(cell(s, f"auroc_{c}") for c in cols) + " |")
-    lines += ["", "Mean ± sd over keys. AUROC against the same model's unwatermarked output.",
+    lines += ["", "Mean ± sd over keys; [..] = 95% problem-level bootstrap CI of the key-averaged AUROC.",
+              "AUROC against the same model's unwatermarked output.",
               "McNemar: exact paired test of Pass@1 per key against the unwatermarked run."]
     (outdir / "sweep_summary.md").write_text("\n".join(lines) + "\n")
     print("\n" + "\n".join(lines))

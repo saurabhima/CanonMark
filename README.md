@@ -69,7 +69,20 @@ python scripts/sweep.py --model $M --dataset humaneval --switch outputs/switch_k
     --kgw_deltas 1 2 3 --outdir outputs/sweep_he
 ```
 
-It writes `sweep_runs.csv` (one row per run), `sweep_summary.csv` / `sweep_summary.md` (mean ± sd over keys per method and δ) and `sweep_results.json`. Plot `pass@1_mean` against `auroc_all_three_mean` to get each method's trade-off curve after edits. Use several keys: with one fixed key, raw-token KGW's null z can shift by up to ±0.8, which moves its AUROC.
+It writes:
+- `sweep_runs.csv`: one row per run
+- `sweep_summary.csv` / `sweep_summary.md`: mean ± sd over keys per method and δ
+- `sweep_results.json` and `sweep_z.json`: everything, including the raw per-problem z-scores
+
+Use several keys: with one fixed key, raw-token KGW's null z can shift by up to ±0.8, which moves its AUROC.
+
+Then plot the trade-off curves (Pass@1 against AUROC on clean code, and after all three edits):
+
+```bash
+python scripts/plot_sweep.py --sweep outputs/sweep_he      # -> tradeoff.png + tradeoff.pdf
+```
+
+**Confidence intervals.** Every AUROC comes with a 95% percentile bootstrap interval over problems (`auroc_ci95`; `--n_boot 0` turns it off). The sweep summary also reports an interval for the **key-averaged** AUROC. Each bootstrap round resamples the problems once and applies that sample to every key, so the interval shows how much the result depends on the benchmark's finite set of problems. The plot draws these intervals as vertical error bars and ± sd of Pass@1 over keys as horizontal ones. With 164 problems a single AUROC is uncertain by about ±0.05, so differences smaller than that need the intervals before you claim them.
 
 **McNemar's test.** Pass@1 is compared with the unwatermarked run problem by problem. `lost` counts problems the watermark broke and `gained` counts problems it fixed. The p-value is an exact two-sided binomial test on those two counts. This is much more sensitive than comparing two independent Pass@1 percentages, because both runs answer the same problems.
 
