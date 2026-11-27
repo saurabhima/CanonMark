@@ -1,9 +1,10 @@
 """Supervised warm-up of the learned switch (analogous to CodeTracer's SFT stage).
 
-Label (default "flippable"): at each scored canonical position, could the keyed
-bias change which carrier is written? True when the model's top choice is a
-carrier and >= 2 different carriers are within delta of the top logit.
-Alternative "entropy": next-token entropy >= 1.2, as in CodeTracer/SWEET. Input: only the k previous canonical lexemes, so the
+Label (default "entropy"): next-token entropy >= 1.2 at the carrier, as in
+CodeTracer/SWEET. Experimental "flippable": the model's top choice is a carrier and
+>= 2 different carriers are within delta of the top logit, i.e. the keyed bias
+could change which carrier is written. In a 30-problem CPU test it did not beat
+the entropy label (mean z 0.36 vs 1.00; see README). Input: only the k previous canonical lexemes, so the
 detector can recompute the decision without the LLM.
 
 Example:
@@ -81,9 +82,9 @@ def main():
     ap.add_argument("--programs", help="jsonl of generations (task_id, code); default: reference solutions")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--context_width", type=int, default=3)
-    ap.add_argument("--label", choices=["flippable", "entropy"], default="flippable",
-                    help="flippable: >=2 carriers within --flip_delta of the top logit (default); "
-                         "entropy: next-token entropy >= --entropy_threshold (CodeTracer-style)")
+    ap.add_argument("--label", choices=["entropy", "flippable"], default="entropy",
+                    help="entropy: next-token entropy >= --entropy_threshold (CodeTracer-style, default); "
+                         "flippable: >=2 carriers within --flip_delta of the top logit (experimental)")
     ap.add_argument("--flip_delta", type=float, default=5.0, help="use the delta you generate with")
     ap.add_argument("--flip_top_k", type=int, default=20)
     ap.add_argument("--entropy_threshold", type=float, default=1.2)
