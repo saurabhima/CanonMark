@@ -11,7 +11,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, LogitsProcessorLis
 from .canon import extract_code
 from .generate import CanonLogitsProcessor, HybridLogitsProcessor, KGWLogitsProcessor, KGWScheme
 from .keyed import KeyedGreen
-from .switch import load_switch
+from .switch import load_switch, switch_fingerprint
 
 METHODS = ("none", "canonmark", "kgw", "hybrid")
 
@@ -35,9 +35,11 @@ def wm_config(method: str, model: str, key: str = "canonmark-demo-key", gamma: f
     """Everything needed to rebuild the processor (generation) and the detector (evaluation)."""
     if method not in METHODS:
         raise ValueError(f"method must be one of {METHODS}")
+    uses_switch = method in ("canonmark", "hybrid")
     return {"method": method, "key": key, "gamma": gamma, "delta": delta, "delta_surface": delta_surface,
-            "context_width": context_width, "top_k": top_k, "switch": switch, "carrier_gate": carrier_gate,
-            "model": model}
+            "context_width": context_width, "top_k": top_k, "switch": switch,
+            "switch_sha256": switch_fingerprint(switch) if uses_switch else None,   # checked at evaluation
+            "carrier_gate": carrier_gate, "model": model}
 
 
 def build_processor(wm: dict, tok):

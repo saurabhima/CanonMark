@@ -33,6 +33,7 @@ from canonmark.data import load  # noqa: E402
 from canonmark.evaluation import (functionality, key_averaged_auroc_ci, make_detector, mcnemar,  # noqa: E402
                                   read_jsonl, robustness)
 from canonmark.pipeline import wm_config  # noqa: E402
+from canonmark.switch import SwitchMismatchError  # noqa: E402
 
 
 def parse():
@@ -118,16 +119,23 @@ def main():
     results = {"unwatermarked": base}
     rows_out = []
     z_store = {}
+    stale = []
     for name, wm in plan[1:]:
         path = rundir / f"{name}.jsonl"
         if not path.is_file():
             print(f"skip {name} (no run file)")
             continue
         rows = read_jsonl(path)
+        try:
+            detector = make_detector(rows[0]["wm"], source=str(path))
+        except SwitchMismatchError as e:          # stale run: report it, keep evaluating the others
+            print(f"SKIP {name}: {e}", flush=True)
+            stale.append(name)
+            continue
         res, passed = functionality(rows, probs, not a.no_exec)
         if base_pass and passed:
             res["mcnemar_vs_unwatermarked"] = mcnemar(base_pass, passed)
-        res.update(robustness(rows, neg_rows, probs, make_detector(rows[0]["wm"]), a.attacks,
+        res.update(robustness(rows, neg_rows, probs, detector, a.attacks,
                               n_boot=a.n_boot, keep_z=True))
         z_store[name] = {t: res[t].pop("z") for t in ["clean"] + a.attacks}
         results[name] = res
@@ -147,6 +155,9 @@ def main():
         print(f"{name:32s} pass@1 {rec['pass@1']}  Δ {rec['delta_pass@1']}  p {rec['mcnemar_p']}  "
               f"AUROC clean {rec['auroc_clean']}  all-attacks {rec.get('auroc_all_three')}", flush=True)
 
+    if stale:
+        print(f"\n{len(stale)} run(s) skipped because their switch changed after generation: {', '.join(stale)}."
+              "\nRegenerate them (delete those run files, or use a new --outdir).", flush=True)
     (outdir / "sweep_results.json").write_text(json.dumps(results, indent=1))
     (outdir / "sweep_z.json").write_text(json.dumps(z_store))     # raw per-task z, for re-analysis
     if not rows_out:

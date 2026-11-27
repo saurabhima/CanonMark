@@ -16,7 +16,7 @@ from .attacks import ATTACKS
 from .detect import detect
 from .execution import is_syntax_ok, run_many
 from .keyed import KeyedGreen
-from .switch import load_switch
+from .switch import load_switch, verify_switch
 
 
 def read_jsonl(p) -> list[dict]:
@@ -29,8 +29,11 @@ def _tokenizer(name: str):
     return AutoTokenizer.from_pretrained(name)
 
 
-def make_detector(wm: dict):
-    """code -> z, using the run's own method, key and settings."""
+def make_detector(wm: dict, source: str | None = None):
+    """code -> z, using the run's own method, key and settings.
+
+    Raises SwitchMismatchError if the run's switch file changed after generation."""
+    verify_switch(wm, source)
     m = wm["method"]
     if m == "canonmark":
         green = KeyedGreen(wm["key"], wm["gamma"], wm["context_width"])

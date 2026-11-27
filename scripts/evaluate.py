@@ -68,7 +68,7 @@ def main():
         res, passed = functionality(rows, probs, not a.no_exec)
         if base_pass and passed:
             res["mcnemar_vs_unwatermarked"] = mcnemar(base_pass, passed)
-        res.update(robustness(rows, neg_rows, probs, make_detector(wm), a.attacks, n_boot=a.n_boot))
+        res.update(robustness(rows, neg_rows, probs, make_detector(wm, source=path), a.attacks, n_boot=a.n_boot))
         results[name] = res
 
     print(json.dumps(results, indent=1))

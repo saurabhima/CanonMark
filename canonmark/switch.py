@@ -129,3 +129,55 @@ def load_switch(spec: str | None) -> SwitchPolicy:
     if spec in (None, "", "always"):
         return AlwaysOn()
     return LearnedSwitch.load(spec)
+
+
+# --------------------------------------------------------------------------
+# Fingerprint guard: detection must use exactly the switch generation used
+# --------------------------------------------------------------------------
+class SwitchMismatchError(RuntimeError):
+    pass
+
+
+def switch_fingerprint(spec: str | None) -> str | None:
+    """SHA-256 of a saved switch (weights + config). None for 'always' (nothing to verify)."""
+    if spec in (None, "", "always"):
+        return None
+    import hashlib
+    path = Path(spec)
+    files = [path / "switch.pt", path / "switch_config.json"]
+    missing = [str(f) for f in files if not f.is_file()]
+    if missing:
+        raise FileNotFoundError(f"switch files not found: {', '.join(missing)}")
+    h = hashlib.sha256()
+    for f in files:
+        h.update(f.name.encode() + b"\0" + f.read_bytes() + b"\0")
+    return h.hexdigest()
+
+
+_WARNED_UNVERIFIED: set[str] = set()
+
+
+def verify_switch(wm: dict, source: str | None = None) -> None:
+    """Raise SwitchMismatchError if the switch at wm['switch'] differs from the one recorded at
+    generation time. Runs made before fingerprints existed get a one-time warning instead."""
+    spec = wm.get("switch")
+    if wm.get("method") not in ("canonmark", "hybrid") or spec in (None, "", "always"):
+        return
+    where = f" (run file {source})" if source else ""
+    try:
+        current = switch_fingerprint(spec)
+    except FileNotFoundError as e:
+        raise SwitchMismatchError(f"The switch used for generation{where} is missing: {e}") from None
+    recorded = wm.get("switch_sha256")
+    if recorded is None:
+        if spec not in _WARNED_UNVERIFIED:
+            _WARNED_UNVERIFIED.add(spec)
+            import warnings
+            warnings.warn(f"Run{where} has no switch fingerprint (made before the guard existed); cannot verify "
+                          f"that {spec} is the switch it was generated with.", stacklevel=2)
+        return
+    if recorded != current:
+        raise SwitchMismatchError(
+            f"Switch at {spec} has changed since the run{where} was generated "
+            f"(expected {recorded[:12]}…, found {current[:12]}…). Detection would check the wrong positions. "
+            "Restore that switch, or regenerate the run (in a new --outdir for sweeps).")
