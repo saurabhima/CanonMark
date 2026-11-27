@@ -82,6 +82,15 @@ Then plot the trade-off curves (Pass@1 against AUROC on clean code, and after al
 python scripts/plot_sweep.py --sweep outputs/sweep_he      # -> tradeoff.png + tradeoff.pdf
 ```
 
+**Paired comparisons.** To test a claim like "CanonMark δ=3 beats KGW δ=2 after all three edits", use `scripts/compare.py`. By default it pairs each CanonMark / hybrid δ with the KGW δ that has the closest Pass@1. You can also name pairs:
+
+```bash
+python scripts/compare.py --sweep outputs/sweep_he                      # matched-Pass@1 pairs
+python scripts/compare.py --sweep outputs/sweep_he --pair canonmark:3 kgw:2 --attacks clean all_three
+```
+
+It reports ΔAUROC (key-averaged) and ΔPass@1, each with a 95% **paired** bootstrap CI, a p-value and a Holm-corrected p-value. Each round resamples the problems once for both configurations and all keys, so per-problem difficulty cancels out. That is tighter than checking whether two separate intervals overlap. ΔPass@1 needs `sweep_pass.json`, which `sweep.py --eval_only` creates for existing sweeps. Results go to `compare.md` / `compare.json`.
+
 **Confidence intervals.** Every AUROC comes with a 95% percentile bootstrap interval over problems (`auroc_ci95`; `--n_boot 0` turns it off). The sweep summary also reports an interval for the **key-averaged** AUROC. Each bootstrap round resamples the problems once and applies that sample to every key, so the interval shows how much the result depends on the benchmark's finite set of problems. The plot draws these intervals as vertical error bars and ± sd of Pass@1 over keys as horizontal ones. With 164 problems a single AUROC is uncertain by about ±0.05, so differences smaller than that need the intervals before you claim them.
 
 **McNemar's test.** Pass@1 is compared with the unwatermarked run problem by problem. `lost` counts problems the watermark broke and `gained` counts problems it fixed. The p-value is an exact two-sided binomial test on those two counts. This is much more sensitive than comparing two independent Pass@1 percentages, because both runs answer the same problems.

@@ -119,6 +119,7 @@ def main():
     results = {"unwatermarked": base}
     rows_out = []
     z_store = {}
+    pass_store = {"none": base_pass}
     stale = []
     for name, wm in plan[1:]:
         path = rundir / f"{name}.jsonl"
@@ -138,6 +139,7 @@ def main():
         res.update(robustness(rows, neg_rows, probs, detector, a.attacks,
                               n_boot=a.n_boot, keep_z=True))
         z_store[name] = {t: res[t].pop("z") for t in ["clean"] + a.attacks}
+        pass_store[name] = passed
         results[name] = res
         mc = res.get("mcnemar_vs_unwatermarked", {})
         rec = {"run": name, "method": wm["method"], "delta": wm["delta"], "key": wm["key"],
@@ -160,6 +162,7 @@ def main():
               "\nRegenerate them (delete those run files, or use a new --outdir).", flush=True)
     (outdir / "sweep_results.json").write_text(json.dumps(results, indent=1))
     (outdir / "sweep_z.json").write_text(json.dumps(z_store))     # raw per-task z, for re-analysis
+    (outdir / "sweep_pass.json").write_text(json.dumps(pass_store))   # per-task pass/fail (scripts/compare.py)
     if not rows_out:
         return
     with open(outdir / "sweep_runs.csv", "w", newline="") as f:
