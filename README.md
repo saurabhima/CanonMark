@@ -53,10 +53,25 @@ python scripts/generate.py --model $M --dataset humaneval --method hybrid --swit
     --delta_surface 2 --key SECRET --out outputs/he_hybrid.jsonl
 python scripts/generate.py --model $M --dataset humaneval --method kgw --delta 2 --key SECRET --out outputs/he_kgw.jsonl
 
-# 3. evaluate: Pass@1, syntax-error rate, z / AUROC / TPR@5%FPR, before and after each attack
+# 3. evaluate: Pass@1 (+ McNemar test vs unwatermarked), syntax errors, z / AUROC / TPR@5%FPR,
+#    before and after each attack
 python scripts/evaluate.py --dataset humaneval --runs outputs/he_canon.jsonl outputs/he_hybrid.jsonl \
     outputs/he_kgw.jsonl --negatives outputs/he_none.jsonl --out outputs/he_results.json
 ```
+
+### Sweeps: trade-off curves with error bars
+
+`scripts/sweep.py` runs a grid of watermark strength δ × secret key for each method. It loads the model once, shares one unwatermarked run, evaluates everything, and resumes if interrupted:
+
+```bash
+python scripts/sweep.py --model $M --dataset humaneval --switch outputs/switch_k3 \
+    --keys key-a key-b key-c --canon_deltas 3 4 5 --hybrid_deltas 5 --delta_surface 2 \
+    --kgw_deltas 1 2 3 --outdir outputs/sweep_he
+```
+
+It writes `sweep_runs.csv` (one row per run), `sweep_summary.csv` / `sweep_summary.md` (mean ± sd over keys per method and δ) and `sweep_results.json`. Plot `pass@1_mean` against `auroc_all_three_mean` to get each method's trade-off curve after edits. Use several keys: with one fixed key, raw-token KGW's null z can shift by up to ±0.8, which moves its AUROC.
+
+**McNemar's test.** Pass@1 is compared with the unwatermarked run problem by problem. `lost` counts problems the watermark broke and `gained` counts problems it fixed. The p-value is an exact two-sided binomial test on those two counts. This is much more sensitive than comparing two independent Pass@1 percentages, because both runs answer the same problems.
 
 ## First results (CPU smoke test, indicative only)
 
