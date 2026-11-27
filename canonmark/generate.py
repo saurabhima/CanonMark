@@ -183,7 +183,7 @@ class KGWLogitsProcessor(_CodeRegionProcessor):
             if len(gen) == 0 or self.open_code(gen) is None:
                 continue
             self.stats["code_steps"] += 1
-            mask = torch.from_numpy(self.scheme.green_mask(int(gen[-1])))
+            mask = torch.from_numpy(self.scheme.green_mask(int(gen[-1]))).to(scores.device)
             V = min(scores.shape[-1], mask.shape[0])
             scores[b, :V] += self.delta * mask[:V].to(scores.dtype)
             self.stats["biased_steps"] += 1
