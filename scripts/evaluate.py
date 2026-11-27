@@ -83,6 +83,16 @@ def main():
     ap.add_argument("--out")
     a = ap.parse_args()
 
+    missing = [p for p in a.runs + ([a.negatives] if a.negatives else []) if not Path(p).is_file()]
+    if missing:
+        hints = {"none": "--method none", "canon": "--method canonmark", "hybrid": "--method hybrid",
+                 "kgw": "--method kgw --delta 2"}
+        msg = ["Missing input file(s). Create them with scripts/generate.py first:"]
+        for p in missing:
+            flag = next((v for k, v in hints.items() if k in Path(p).stem), "--method <none|canonmark|hybrid|kgw>")
+            msg.append(f"  python scripts/generate.py --model $M --dataset {a.dataset} {flag} --out {p}")
+        raise SystemExit("\n".join(msg))
+
     probs = {p["task_id"]: p for p in load(a.dataset)}
     neg_rows = read_jsonl(a.negatives) if a.negatives else []
     results = {}
