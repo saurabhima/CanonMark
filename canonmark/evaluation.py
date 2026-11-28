@@ -13,6 +13,7 @@ import statistics
 from functools import lru_cache
 
 from .attacks import ATTACKS
+from .canon import CanonRules
 from .detect import detect
 from .execution import is_syntax_ok, run_many
 from .keyed import KeyedGreen
@@ -37,10 +38,11 @@ def make_detector(wm: dict, source: str | None = None, weighted: bool = False):
     Raises SwitchMismatchError if the run's switch file changed after generation."""
     verify_switch(wm, source)
     m = wm["method"]
+    rules = CanonRules.from_dict(wm.get("canon_rules"))      # absent in older runs -> default rules
     if m == "canonmark":
         green = KeyedGreen(wm["key"], wm["gamma"], wm["context_width"])
         sw = load_switch(wm.get("switch"))
-        return lambda code: detect(code, green, sw, weighted=weighted).z
+        return lambda code: detect(code, green, sw, weighted=weighted, rules=rules).z
     from .generate import KGWScheme, hybrid_detect, kgw_detect
     tok = _tokenizer(wm["model"])
     if m == "kgw":
@@ -50,7 +52,7 @@ def make_detector(wm: dict, source: str | None = None, weighted: bool = False):
         green = KeyedGreen(wm["key"], wm["gamma"], wm["context_width"])
         scheme = KGWScheme(wm["key"] + "/surface", len(tok), wm["gamma"])
         sw = load_switch(wm.get("switch"))
-        return lambda code: hybrid_detect(code, tok, green, scheme, sw, weighted=weighted)["z"]
+        return lambda code: hybrid_detect(code, tok, green, scheme, sw, weighted=weighted, rules=rules)["z"]
     raise ValueError(m)
 
 

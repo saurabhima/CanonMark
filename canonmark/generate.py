@@ -23,7 +23,7 @@ import numpy as np
 import torch
 from transformers import LogitsProcessor
 
-from .canon import canonicalize, find_code_region
+from .canon import CanonRules, canonicalize, find_code_region
 from .keyed import KeyedGreen
 from .switch import AlwaysOn, SwitchPolicy
 
@@ -60,8 +60,10 @@ class _CodeRegionProcessor(LogitsProcessor):
 
 class CanonLogitsProcessor(_CodeRegionProcessor):
     def __init__(self, tokenizer, green: KeyedGreen, switch: SwitchPolicy | None = None,
-                 delta: float = 2.0, top_k: int = 40, fenced: bool = True, carrier_gate: bool = False):
+                 delta: float = 2.0, top_k: int = 40, fenced: bool = True, carrier_gate: bool = False,
+                 rules: CanonRules | None = None):
         super().__init__(tokenizer, fenced)
+        self.rules = rules
         self.green = green
         self.switch = switch if switch is not None else AlwaysOn()
         self.delta = delta
@@ -77,7 +79,7 @@ class CanonLogitsProcessor(_CodeRegionProcessor):
     def _decisions(self, code: str, scores_row, switch) -> list[tuple[int, bool, bool, str | None]]:
         """For each top-k candidate, in descending score order:
         (token id, produces a new carrier?, green and switched on?, that carrier's lexeme or None)."""
-        lex, cps = canonicalize(code)
+        lex, cps = canonicalize(code, rules=self.rules)
         if cps:
             cp = cps[-1]
             base_n, tail_src, st, off = cp.n_lexemes, code[cp.offset:], cp.state, cp.offset
@@ -218,8 +220,8 @@ class HybridLogitsProcessor(CanonLogitsProcessor):
 
     def __init__(self, tokenizer, green: KeyedGreen, scheme: KGWScheme, switch: SwitchPolicy | None = None,
                  delta: float = 2.0, delta_surface: float | None = None, top_k: int = 40, fenced: bool = True,
-                 carrier_gate: bool = False):
-        super().__init__(tokenizer, green, switch, delta, top_k, fenced, carrier_gate)
+                 carrier_gate: bool = False, rules: CanonRules | None = None):
+        super().__init__(tokenizer, green, switch, delta, top_k, fenced, carrier_gate, rules)
         self.scheme = scheme
         self.delta_surface = delta if delta_surface is None else delta_surface
 
@@ -243,13 +245,13 @@ class HybridLogitsProcessor(CanonLogitsProcessor):
 
 
 def hybrid_detect(code: str, tokenizer, green: KeyedGreen, scheme: KGWScheme, switch: SwitchPolicy | None = None,
-                  ignore_repeated: bool = True, weighted: bool = False) -> dict:
+                  ignore_repeated: bool = True, weighted: bool = False, rules: CanonRules | None = None) -> dict:
     """z of each channel on disjoint positions, combined with Stouffer.
     Surface positions = LLM tokens that do not start a scored canonical lexeme."""
     from .canon import canonical_stream
     from .detect import detect, p_value, stouffer, z_score
-    canon = detect(code, green, switch, ignore_repeated, weighted=weighted)
-    starts = sorted(l.start for l in canonical_stream(code) if l.scored)
+    canon = detect(code, green, switch, ignore_repeated, weighted=weighted, rules=rules)
+    starts = sorted(l.start for l in canonical_stream(code, rules) if l.scored)
     enc = tokenizer(code, add_special_tokens=False, return_offsets_mapping=True)
     ids, offs = enc["input_ids"], enc["offset_mapping"]
     seen, n, g, si = set(), 0, 0, 0

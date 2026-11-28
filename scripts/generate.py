@@ -33,6 +33,10 @@ def parse():
     ap.add_argument("--top_k", type=int, default=40, help="candidates examined per step")
     ap.add_argument("--switch", default="always", help="'always' or path to a trained switch")
     ap.add_argument("--carrier_gate", action="store_true", help="bias carriers only when the model's top choice is a carrier")
+    ap.add_argument("--skip_body_start", action="store_true",
+                    help="never use the first lexeme of a function body as a carrier (recorded in the run)")
+    ap.add_argument("--seeding", choices=["per_problem", "global"], default="per_problem",
+                    help="per_problem: same random numbers per problem in every run (default); global: old behaviour")
     ap.add_argument("--temperature", type=float, default=0.2, help="0 = greedy")
     ap.add_argument("--top_p", type=float, default=0.95)
     ap.add_argument("--max_new_tokens", type=int, default=512)
@@ -50,7 +54,7 @@ def main():
     if a.limit:
         probs = probs[:a.limit]
     wm = wm_config(a.method, a.model, a.key, a.gamma, a.delta, a.delta_surface, a.context_width, a.top_k,
-                   a.switch, a.carrier_gate)
+                   a.switch, a.carrier_gate, a.skip_body_start, a.seeding)
     generate_file(model, tok, probs, wm, a.out, a.batch_size, a.temperature, a.top_p, a.max_new_tokens, a.seed,
                   log=lambda s: print(s, flush=True))
 

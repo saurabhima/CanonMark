@@ -32,7 +32,7 @@ from canonmark.attacks import ATTACKS  # noqa: E402
 from canonmark.data import load  # noqa: E402
 from canonmark.evaluation import (functionality, key_averaged_auroc_ci, make_detector, mcnemar,  # noqa: E402
                                   read_jsonl, robustness)
-from canonmark.pipeline import wm_config  # noqa: E402
+from canonmark.pipeline import same_run_settings, wm_config  # noqa: E402
 from canonmark.switch import SwitchMismatchError  # noqa: E402
 
 
@@ -48,6 +48,10 @@ def parse():
     ap.add_argument("--kgw_deltas", nargs="*", type=float, default=[1, 2, 3])
     ap.add_argument("--switch", default="always", help="switch for canonmark/hybrid ('always' or a path)")
     ap.add_argument("--carrier_gate", action="store_true")
+    ap.add_argument("--skip_body_start", action="store_true",
+                    help="never use the first lexeme of a function body as a carrier (recorded in the run)")
+    ap.add_argument("--seeding", choices=["per_problem", "global"], default="per_problem",
+                    help="per_problem: same random numbers per problem in every run (default); global: old behaviour")
     ap.add_argument("--gamma", type=float, default=0.5)
     ap.add_argument("--context_width", type=int, default=3)
     ap.add_argument("--top_k", type=int, default=40)
@@ -73,14 +77,16 @@ def fmt_delta(d: float) -> str:
 
 def configs(a) -> list[tuple[str, dict]]:
     common = dict(gamma=a.gamma, context_width=a.context_width, top_k=a.top_k)
-    out = [("none", wm_config("none", a.model, **common))]
+    out = [("none", wm_config("none", a.model, seeding=a.seeding, **common))]
     for method, deltas in (("canonmark", a.canon_deltas), ("hybrid", a.hybrid_deltas), ("kgw", a.kgw_deltas)):
         for d in deltas:
             for key in a.keys:
                 wm = wm_config(method, a.model, key=key, delta=d, **common,
                                delta_surface=a.delta_surface if method == "hybrid" else None,
                                switch=a.switch if method != "kgw" else "always",
-                               carrier_gate=a.carrier_gate if method != "kgw" else False)
+                               carrier_gate=a.carrier_gate if method != "kgw" else False,
+                               skip_body_start=a.skip_body_start if method != "kgw" else False,
+                               seeding=a.seeding)
                 out.append((f"{method}_d{fmt_delta(d)}_{key}", wm))
     return out
 
@@ -98,6 +104,20 @@ def main():
     (outdir / "sweep_config.json").write_text(json.dumps(vars(a), indent=1))
 
     # ---- 1. generation (model loaded lazily, once) ----------------------------
+    if not a.eval_only:               # never mix runs made with different settings into one sweep
+        clash = []
+        for name, wm in plan:
+            f = rundir / f"{name}.jsonl"
+            if f.is_file():
+                with open(f) as fh:
+                    first = fh.readline()
+                diff = same_run_settings(json.loads(first)["wm"], wm) if first.strip() else []
+                if diff:
+                    clash.append(f"  {f.name}: differs in {', '.join(diff)}")
+        if clash:
+            raise SystemExit("These existing run files were generated with different settings than requested:\n"
+                             + "\n".join(clash) + "\nUse a new --outdir (or delete those files) to regenerate them, "
+                             "or add --eval_only to only evaluate what is there.")
     todo = [(name, wm) for name, wm in plan if not (rundir / f"{name}.jsonl").is_file()]
     if todo and not a.eval_only:
         from canonmark.pipeline import generate_file, load_model

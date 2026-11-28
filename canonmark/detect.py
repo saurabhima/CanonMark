@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from .canon import canonical_stream, texts
+from .canon import CanonRules, canonical_stream, texts
 from .keyed import KeyedGreen
 from .switch import AlwaysOn, SwitchPolicy
 
@@ -41,7 +41,7 @@ def p_value(z: float) -> float:
 
 def detect(code: str, green: KeyedGreen, switch: SwitchPolicy | None = None,
            ignore_repeated: bool = True, z_threshold: float = 4.0,
-           return_marks: bool = False, weighted: bool = False) -> Detection:
+           return_marks: bool = False, weighted: bool = False, rules: CanonRules | None = None) -> Detection:
     """Score a piece of code. `code` should be just the code (see canon.extract_code).
 
     ignore_repeated: count each (context, lexeme) pair once. Repeats are perfectly
@@ -53,7 +53,7 @@ def detect(code: str, green: KeyedGreen, switch: SwitchPolicy | None = None,
     confident positions really carry more signal.
     """
     switch = switch or AlwaysOn()
-    lex = canonical_stream(code)
+    lex = canonical_stream(code, rules)
     tx = texts(lex)
     seen = set()
     n = g = 0

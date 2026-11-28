@@ -97,3 +97,45 @@ def test_code_region():
     assert t[s:e] == "def f():\n    return 1\n"
     assert extract_code(t) == "def f():\n    return 1\n"
     assert find_code_region("Sure! ```pyth") is None
+
+
+# ---------------------------------------------------------------- body-start rule
+from canonmark.canon import CanonRules  # noqa: E402
+
+BODY = CanonRules(skip_body_start=True)
+
+
+def test_body_start_rule_unscores_first_body_lexeme_only():
+    code = ('def f(xs):\n    """doc"""\n    return sorted(xs)\n\n'
+            'def g(a): return len(a)\n\n'
+            'class C:\n    x = len([])\n\n'
+            'def h(n):\n    def inner(m):\n        return m + 1\n    return inner(n)\n')
+    plain = {(l.start, l.text): l.scored for l in canonical_stream(code)}
+    rule = {(l.start, l.text): l.scored for l in canonical_stream(code, BODY)}
+    changed = sorted(k for k in plain if plain[k] != rule[k])
+    # f's `return` (docstring skipped), g's one-liner `return`, inner's `return`; h starts with `def` (unscored anyway)
+    assert [t for _, t in changed] == ["return", "return", "return"]
+    assert all(plain[k] and not rule[k] for k in changed)
+    assert texts(canonical_stream(code)) == texts(canonical_stream(code, BODY))   # same stream, fewer carriers
+
+
+@pytest.mark.parametrize("attack", ["black", "strip_comments", "rename", "all_three"])
+def test_exact_invariance_with_body_start_rule(attack):
+    for code in [p["reference"] for p in HE]:
+        att = ATTACKS[attack](code)
+        if att is not None:
+            a = [(l.text, l.scored) for l in canonical_stream(att, BODY)]
+            assert a == [(l.text, l.scored) for l in canonical_stream(code, BODY)], code[:60]
+
+
+def test_resume_with_body_start_rule():
+    rng = random.Random(2)
+    for p in HE[:60]:
+        code = p["reference"]
+        for cut in rng.sample(range(1, len(code)), min(15, len(code) - 1)):
+            pre = code[:cut]
+            full, cps = canonicalize(pre, rules=BODY)
+            if cps:
+                cp = cps[-1]
+                tail, _ = canonicalize(pre[cp.offset:], cp.state, cp.offset, cp.n_lexemes)
+                assert [(l.text, l.scored) for l in full[:cp.n_lexemes] + tail] == [(l.text, l.scored) for l in full]

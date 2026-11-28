@@ -92,3 +92,59 @@ def test_decisions_report_carrier_lexemes(tok):
             assert not carrier and lexeme is None          # a new local name is not a carrier
         else:
             assert carrier and lexeme == word
+
+
+def test_generation_matches_detection_with_body_start_rule(tok):
+    from canonmark.canon import CanonRules
+    rules = CanonRules(skip_body_start=True)
+    green = KeyedGreen("k", 0.5, 3)
+    proc = CanonLogitsProcessor(tok, green, top_k=5, rules=rules)
+    V = len(tok)
+    total = matched = 0
+    for p in load_humaneval()[:25]:
+        code = p["reference"]
+        ids = tok("```python\n" + code + "```", add_special_tokens=False)["input_ids"]
+        proc.trace = []
+        for t in range(1, len(ids)):
+            scores = torch.zeros(V)
+            scores[ids[t]] = 10.0
+            proc.trace_token = ids[t]
+            proc._bias_row(torch.tensor(ids[:t]), scores)
+        lex = canonical_stream(code, rules)
+        det = {(green.context(texts(lex), j), lx.text) for j, lx in enumerate(lex) if lx.scored}
+        for ctx, lexeme, on, g in proc.trace:
+            total += 1
+            matched += (ctx, lexeme) in det
+    # ~5% of decisions are on a partial name (e.g. `max` that becomes `max_depth`); the same rate as without
+    # the rule on these problems (94.3%). Such cases only dilute the signal, never fake it.
+    assert total > 150 and matched / total > 0.93, (matched, total)
+
+
+def test_same_run_settings():
+    from canonmark.pipeline import same_run_settings, wm_config
+    new = wm_config("canonmark", "m", key="k", skip_body_start=True)
+    old = {k: v for k, v in wm_config("canonmark", "m", key="k").items() if k not in ("canon_rules", "seeding")}
+    assert set(same_run_settings(old, new)) == {"canon_rules", "seeding"}
+    assert same_run_settings(new, dict(new)) == []
+    assert same_run_settings(old, wm_config("canonmark", "m", key="k", seeding="global")) == []
+
+
+def test_per_problem_seeding_makes_outputs_independent_of_order(tok, tmp_path):
+    """With per-problem seeding a problem's sample does not depend on what was generated before it."""
+    import json
+    from transformers import AutoModelForCausalLM
+    from canonmark.pipeline import generate_file, wm_config
+    try:
+        model = AutoModelForCausalLM.from_pretrained(MODEL).eval()
+    except Exception as e:
+        pytest.skip(f"model unavailable: {e}")
+    probs = load_humaneval()
+    target = probs[2]
+    outs = {}
+    for seeding in ("per_problem", "global"):
+        for order, plist in (("alone", [target]), ("after", [probs[0], target])):
+            f = tmp_path / f"{seeding}_{order}.jsonl"
+            generate_file(model, tok, plist, wm_config("none", MODEL, seeding=seeding), f, temperature=1.0,
+                          max_new_tokens=24, seed=7, log=lambda s: None)
+            outs[(seeding, order)] = [json.loads(l) for l in open(f)][-1]["response"]
+    assert outs[("per_problem", "alone")] == outs[("per_problem", "after")]

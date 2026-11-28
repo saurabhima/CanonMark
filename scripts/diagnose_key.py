@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from canonmark.canon import canonical_stream, texts  # noqa: E402
+from canonmark.canon import CanonRules, canonical_stream, texts  # noqa: E402
 from canonmark.data import load  # noqa: E402
 from canonmark.evaluation import functionality, read_jsonl  # noqa: E402
 from canonmark.execution import run_tests  # noqa: E402
@@ -50,9 +50,9 @@ def line_at(code: str, pos: int) -> str:
     return code[s:e if e >= 0 else len(code)].rstrip()
 
 
-def first_divergence(ref_code: str, wm_code: str):
+def first_divergence(ref_code: str, wm_code: str, rules=None):
     """Index of the first differing canonical lexeme and the two streams (None if identical)."""
-    a, b = canonical_stream(ref_code), canonical_stream(wm_code)
+    a, b = canonical_stream(ref_code, rules), canonical_stream(wm_code, rules)
     ta, tb = texts(a), texts(b)
     i = 0
     while i < min(len(ta), len(tb)) and ta[i] == tb[i]:
@@ -109,11 +109,12 @@ def main():
 
     # first-divergence substitutions for the suspect key, across all problems
     green_k, sw_k = schemes[a.key]
+    rules_k = CanonRules.from_dict(next(iter(rows[a.key].values()))["wm"].get("canon_rules"))
     pattern_tasks = defaultdict(list)          # (ctx, from, to) -> tasks where the key's code diverged this way
     pattern_scored = {}                         # is the watermarked lexeme a carrier?
     divergence = {}
     for t in tasks:
-        res = first_divergence(none_rows[t]["code"], rows[a.key][t]["code"])
+        res = first_divergence(none_rows[t]["code"], rows[a.key][t]["code"], rules_k)
         if res is None:
             continue
         i, ref_lex, wm_lex = res

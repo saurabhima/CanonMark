@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import torch  # noqa: E402
 from transformers import AutoModelForCausalLM, AutoTokenizer, LogitsProcessorList  # noqa: E402
 
-from canonmark.canon import extract_code  # noqa: E402
+from canonmark.canon import CanonRules, extract_code  # noqa: E402
 from canonmark.data import load  # noqa: E402
 from canonmark.detect import detect  # noqa: E402
 from canonmark.execution import run_many  # noqa: E402
@@ -76,6 +76,8 @@ def main():
     ap.add_argument("--lambda_wm", type=float, default=1.0)
     ap.add_argument("--beta_process", type=float, default=0.5)
     ap.add_argument("--red_penalty", type=float, default=3.0)
+    ap.add_argument("--skip_body_start", action="store_true",
+                    help="train under the body-start rule (use the same setting when generating)")
     ap.add_argument("--entropy_bonus", type=float, default=0.01)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--seed", type=int, default=0)
@@ -105,6 +107,7 @@ def main():
     net.train()
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr)
     green = KeyedGreen(a.key, a.gamma, a.context_width)
+    rules = CanonRules(skip_body_start=a.skip_body_start)
     problems = load(a.dataset)
     Path(a.out).mkdir(parents=True, exist_ok=True)
     log = open(Path(a.out) / "train_log.jsonl", "w")
@@ -116,7 +119,7 @@ def main():
         for p in batch_probs:
             G = a.group
             policies = [SampledSwitch(net, vocab) for _ in range(G)]
-            proc = CanonLogitsProcessor(tok, green, policies, delta=a.delta)
+            proc = CanonLogitsProcessor(tok, green, policies, delta=a.delta, rules=rules)
             text = tok.apply_chat_template([{"role": "user", "content": p["prompt"]}], tokenize=False,
                                            add_generation_prompt=True)
             enc = tok([text] * G, return_tensors="pt", padding=True, add_special_tokens=False).to(device)
@@ -128,7 +131,7 @@ def main():
                                    logits_processor=LogitsProcessorList([proc]))
             codes = [extract_code(tok.decode(r[plen:], skip_special_tokens=True)) for r in gen]
             passed = [ok for ok, _ in run_many(codes, [p] * G)]
-            dets = [detect(c, green, pol, return_marks=True) for c, pol in zip(codes, policies)]
+            dets = [detect(c, green, pol, return_marks=True, rules=rules) for c, pol in zip(codes, policies)]
             R = torch.tensor([float(ok) + a.lambda_wm * min(max(d.z / 3, 0.0), 1.0)
                               for ok, d in zip(passed, dets)])
             A_out = (R - R.mean()) / (R.std() + 1e-4)

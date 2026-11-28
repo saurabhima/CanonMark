@@ -61,6 +61,25 @@ class Lexeme:
     end: int
 
 
+@dataclass(frozen=True)
+class CanonRules:
+    """Optional scoring rules. They change which lexemes are carriers, so a run must be
+    detected with the rules it was generated with (they are recorded in its settings).
+
+    skip_body_start: the first lexeme of every function body (after the docstring) is
+        never a carrier. The bias otherwise tends to push a green `return` / `if` where
+        the model wanted to start with an assignment, producing hasty one-liners.
+    """
+    skip_body_start: bool = False
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "CanonRules":
+        return cls(**(d or {}))
+
+    def as_dict(self) -> dict:
+        return {"skip_body_start": self.skip_body_start}
+
+
 @dataclass
 class CanonState:
     """Everything needed to resume lexing at the start of a logical line."""
@@ -69,10 +88,14 @@ class CanonState:
     after_block_open: bool = True                   # module start / right after a def or class header
     in_header: bool = False                         # inside `def ...:` / `class ...:`
     in_import: bool = False                         # inside an import statement
+    skip_body_start: bool = False                   # CanonRules.skip_body_start
+    pending_body: bool = False                      # next lexeme starts a function body
+    header_kind: str | None = None                  # "def" / "class" of the current header
 
     def copy(self) -> "CanonState":
         return CanonState(dict(self.names), set(self.imported), self.after_block_open,
-                          self.in_header, self.in_import)
+                          self.in_header, self.in_import, self.skip_body_start, self.pending_body,
+                          self.header_kind)
 
 
 @dataclass(frozen=True)
@@ -99,17 +122,23 @@ def _line_starts(code: str) -> list[int]:
 
 
 def canonicalize(code: str, state: CanonState | None = None, offset: int = 0,
-                 n_before: int = 0) -> tuple[list[Lexeme], list[Checkpoint]]:
+                 n_before: int = 0, rules: CanonRules | None = None) -> tuple[list[Lexeme], list[Checkpoint]]:
     """Canonicalise `code` (which may be an incomplete prefix).
 
     Returns (lexemes, checkpoints). Spans are shifted by `offset`; checkpoint
     lexeme counts are shifted by `n_before` so that resumed runs compose.
     Lexing stops quietly at the first error (incomplete prefix).
     """
-    st = state.copy() if state is not None else CanonState()
+    st = state.copy() if state is not None else CanonState(skip_body_start=bool(rules and rules.skip_body_start))
     out: list[Lexeme] = []
     cps: list[Checkpoint] = []
     starts = _line_starts(code)
+
+    def emit(text: str, scored: bool, start: int, end: int):
+        if st.pending_body:              # first lexeme of a function body (skip_body_start)
+            scored = False
+            st.pending_body = False
+        out.append(Lexeme(text, scored, start, end))
 
     def pos(rc):
         r, c = rc
@@ -141,7 +170,7 @@ def canonicalize(code: str, state: CanonState | None = None, offset: int = 0,
                 fstring_depth -= 1
                 if fstring_depth == 0:
                     if prev_sig != "STR":
-                        out.append(Lexeme("STR", False, fstring_start, pos(tok.end)))
+                        emit("STR", False, fstring_start, pos(tok.end))
                     prev_sig = "STR"
                     at_stmt_start = st.after_block_open = False
             continue
@@ -166,7 +195,7 @@ def canonicalize(code: str, state: CanonState | None = None, offset: int = 0,
             if is_doc:
                 continue
             if prev_sig != "STR":     # implicit concatenation 'a' 'b' -> one STR
-                out.append(Lexeme("STR", False, pos(tok.start), pos(tok.end)))
+                emit("STR", False, pos(tok.start), pos(tok.end))
             prev_sig = "STR"
             continue
 
@@ -184,16 +213,18 @@ def canonicalize(code: str, state: CanonState | None = None, offset: int = 0,
             if s in DROPPED_OPS:
                 continue
             scored = s not in UNSCORED_OPS and not st.in_header and not st.in_import
-            out.append(Lexeme(s, scored, pos(tok.start), pos(tok.end)))
+            emit(s, scored, pos(tok.start), pos(tok.end))
             if s == ":" and st.in_header and depth == 0:
                 st.in_header = False
                 st.after_block_open = True   # the next statement may be a docstring
+                if st.skip_body_start and st.header_kind == "def":
+                    st.pending_body = True
             prev_sig = s
             continue
 
         # ---- numbers -------------------------------------------------------------
         if tt == tokenize.NUMBER:
-            out.append(Lexeme(_norm_number(s), False, pos(tok.start), pos(tok.end)))
+            emit(_norm_number(s), False, pos(tok.start), pos(tok.end))
             prev_sig = "NUM"
             continue
 
@@ -201,39 +232,40 @@ def canonicalize(code: str, state: CanonState | None = None, offset: int = 0,
         if tt == tokenize.NAME:
             if keyword.iskeyword(s):
                 scored = s not in UNSCORED_KEYWORDS and not st.in_header and not st.in_import
-                out.append(Lexeme(s, scored, pos(tok.start), pos(tok.end)))
+                emit(s, scored, pos(tok.start), pos(tok.end))
                 if s in ("def", "class"):
                     st.in_header = True
+                    st.header_kind = s
                 elif s == "import" or (s == "from" and was_stmt_start):  # not `yield from` / `raise .. from`
                     st.in_import = True
                 prev_sig = s
                 continue
             if prev_sig == ".":                               # attribute / method name
-                out.append(Lexeme("." + s, not st.in_header, pos(tok.start), pos(tok.end)))
+                emit("." + s, not st.in_header, pos(tok.start), pos(tok.end))
             elif st.in_import:                                # import statement names
                 st.imported.add(s)
-                out.append(Lexeme("MOD:" + s, False, pos(tok.start), pos(tok.end)))
+                emit("MOD:" + s, False, pos(tok.start), pos(tok.end))
             elif s in st.imported:
-                out.append(Lexeme("MOD:" + s, False, pos(tok.start), pos(tok.end)))
+                emit("MOD:" + s, False, pos(tok.start), pos(tok.end))
             elif s in BUILTINS and s not in st.names:
-                out.append(Lexeme(s, not st.in_header, pos(tok.start), pos(tok.end)))
+                emit(s, not st.in_header, pos(tok.start), pos(tok.end))
             else:
                 if s not in st.names:
                     st.names[s] = f"v{len(st.names)}"
-                out.append(Lexeme(st.names[s], False, pos(tok.start), pos(tok.end)))
+                emit(st.names[s], False, pos(tok.start), pos(tok.end))
             prev_sig = s
             continue
 
         # ---- anything else (ERRORTOKEN etc.) -----------------------------------------
         if s.strip():
-            out.append(Lexeme(s, False, pos(tok.start), pos(tok.end)))
+            emit(s, False, pos(tok.start), pos(tok.end))
             prev_sig = s
     return out, cps
 
 
-def canonical_stream(code: str) -> list[Lexeme]:
+def canonical_stream(code: str, rules: CanonRules | None = None) -> list[Lexeme]:
     """Canonical lexemes of a (possibly partial) piece of Python code."""
-    return canonicalize(code)[0]
+    return canonicalize(code, rules=rules)[0]
 
 
 def texts(lexemes) -> list[str]:
