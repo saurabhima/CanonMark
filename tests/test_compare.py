@@ -67,3 +67,51 @@ def test_pairing_is_tighter_than_separate_intervals():
     _, cb = key_averaged_auroc_ci(zb, n_boot=1000)
     unpaired_width = np.hypot(ca[1] - ca[0], cb[1] - cb[0])      # width if A and B were independent
     assert paired["ci95"][1] - paired["ci95"][0] < 0.8 * unpaired_width
+
+
+def _write_sweep(d, method, delta, shift, rng, keys=("key-a", "key-b"), none_pass=None):
+    import csv, json
+    d.mkdir(parents=True)
+    diff = np.random.default_rng(42).normal(0, 1.0, N)          # same problems in every sweep
+    z, passes, rows = {}, {"none": none_pass or {f"t{i}": True for i in range(N)}}, []
+    for k in keys:
+        run = f"{method}_d{delta}_{k}"
+        zr = _runs(shift, diff, rng, keys=1)[0]
+        z[run] = {"clean": zr, "all_three": zr}
+        passes[run] = {f"t{i}": bool(rng.random() < 0.6) for i in range(N)}
+        rows.append({"run": run, "method": method, "delta": delta, "key": k, "pass@1": 0.6})
+    with open(d / "sweep_runs.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+    (d / "sweep_z.json").write_text(json.dumps(z))
+    (d / "sweep_pass.json").write_text(json.dumps(passes))
+
+
+def test_cross_sweep_comparison(tmp_path):
+    import json, subprocess, sys
+    rng = np.random.default_rng(5)
+    _write_sweep(tmp_path / "sweep_good", "canonmark", 5, 1.2, rng)
+    _write_sweep(tmp_path / "sweep_base", "canonmark", 5, 0.4, rng)
+    script = Path(__file__).resolve().parent.parent / "scripts" / "compare.py"
+    out = subprocess.run([sys.executable, str(script), "--sweep", str(tmp_path / "sweep_good"),
+                          "--with", str(tmp_path / "sweep_base"), "--pair", "canonmark:5", "canonmark:5@sweep_base",
+                          "--n_boot", "500"], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    res = json.loads((tmp_path / "sweep_good" / "compare_cross.json").read_text())[0]
+    assert res["a"].endswith("@sweep_good") and res["b"].endswith("@sweep_base")
+    assert res["auroc"]["clean"]["d_auroc"] > 0.1 and res["auroc"]["clean"]["ci95"][0] > 0
+    assert "pass" in res and "WARNING" not in out.stdout
+
+
+def test_cross_sweep_warns_on_different_negatives(tmp_path):
+    import subprocess, sys
+    rng = np.random.default_rng(6)
+    _write_sweep(tmp_path / "s1", "canonmark", 5, 1.0, rng)
+    _write_sweep(tmp_path / "s2", "canonmark", 5, 1.0, rng, none_pass={f"t{i}": i % 2 == 0 for i in range(N)})
+    script = Path(__file__).resolve().parent.parent / "scripts" / "compare.py"
+    out = subprocess.run([sys.executable, str(script), "--sweep", str(tmp_path / "s1"), "--with", str(tmp_path / "s2"),
+                          "--pair", "canonmark:5", "canonmark:5@s2", "--n_boot", "200"], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert "different unwatermarked runs" in out.stdout
+    bad = subprocess.run([sys.executable, str(script), "--sweep", str(tmp_path / "s1"), "--pair", "canonmark:9", "canonmark:5"],
+                         capture_output=True, text=True)
+    assert bad.returncode != 0 and "not found" in bad.stderr

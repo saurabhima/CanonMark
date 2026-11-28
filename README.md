@@ -91,7 +91,20 @@ python scripts/compare.py --sweep outputs/sweep_he                      # matche
 python scripts/compare.py --sweep outputs/sweep_he --pair canonmark:3 kgw:2 --attacks clean all_three
 ```
 
+To compare configurations from **different sweeps** (e.g. two switches), add the other sweeps with `--with` and name configurations as `method:delta@<sweep directory name>`. Copy the same `none.jsonl` into every sweep so the negatives are identical; the script warns if they aren't:
+
+```bash
+python scripts/compare.py --sweep outputs/sweep_he_flip --with outputs/sweep_he --with outputs/sweep_he_own \
+    --pair canonmark:5 canonmark:5@sweep_he --pair canonmark:5 canonmark:5@sweep_he_own
+```
+
 It reports ΔAUROC (key-averaged) and ΔPass@1, each with a 95% **paired** bootstrap CI, a p-value and a Holm-corrected p-value. Each round resamples the problems once for both configurations and all keys, so per-problem difficulty cancels out. That is tighter than checking whether two separate intervals overlap. ΔPass@1 needs `sweep_pass.json`, which `sweep.py --eval_only` creates for existing sweeps. Results go to `compare.md` / `compare.json`.
+
+**Key diagnostics.** If one key hurts Pass@1 much more than the others, `scripts/diagnose_key.py` finds the problems only that key breaks. For each, it locates where the watermarked code first departs from the unwatermarked code in canonical form (what the model would have written, what the watermark wrote, the context). It then ranks those substitutions and shows whether each was green under the suspect key but red under the others:
+
+```bash
+python scripts/diagnose_key.py --sweep outputs/sweep_he_own --config canonmark:5 --key key-c
+```
 
 **Confidence intervals.** Every AUROC comes with a 95% percentile bootstrap interval over problems (`auroc_ci95`; `--n_boot 0` turns it off). The sweep summary also reports an interval for the **key-averaged** AUROC. Each bootstrap round resamples the problems once and applies that sample to every key, so the interval shows how much the result depends on the benchmark's finite set of problems. The plot draws these intervals as vertical error bars and ± sd of Pass@1 over keys as horizontal ones. With 164 problems a single AUROC is uncertain by about ±0.05, so differences smaller than that need the intervals before you claim them.
 

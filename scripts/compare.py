@@ -20,6 +20,9 @@ Examples:
   # explicit pairs
   python scripts/compare.py --sweep outputs/sweep_he --pair canonmark:3 kgw:2 --pair canonmark:5 kgw:3 \
       --attacks clean all_three
+  # across sweeps (e.g. two switches): configurations are method:delta@<sweep directory name>
+  python scripts/compare.py --sweep outputs/sweep_he_flip --with outputs/sweep_he --with outputs/sweep_he_own \
+      --pair canonmark:5 canonmark:5@sweep_he --pair canonmark:5 canonmark:5@sweep_he_own
 """
 from __future__ import annotations
 
@@ -38,9 +41,12 @@ from canonmark.evaluation import _win_matrix  # noqa: E402
 
 def parse():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sweep", required=True, help="sweep output directory")
+    ap.add_argument("--sweep", required=True, help="main sweep output directory")
+    ap.add_argument("--with", dest="extra", action="append", default=[], metavar="DIR",
+                    help="another sweep directory (repeatable); refer to its configurations as method:delta@<dir name>")
     ap.add_argument("--pair", nargs=2, action="append", metavar=("A", "B"),
-                    help="method:delta method:delta, e.g. canonmark:3 kgw:2 (repeatable)")
+                    help="method:delta[@sweep] method:delta[@sweep], e.g. canonmark:5@sweep_he_flip canonmark:5@sweep_he "
+                         "(repeatable; without @ the main --sweep is used)")
     ap.add_argument("--attacks", nargs="*", help="conditions to compare (default: all in the sweep)")
     ap.add_argument("--negatives", default="neg_model", choices=["neg_model", "neg_human"],
                     help="negative set: unwatermarked model output (default) or human references")
@@ -63,11 +69,13 @@ def load_sweep(d: Path, sfx: str = ""):
     return groups, z, passes
 
 
-def parse_cfg(s: str) -> tuple[str, float]:
-    m, _, d = s.partition(":")
+def parse_cfg(s: str, main_label: str) -> tuple[str, str, float]:
+    """'method:delta[@sweep]' -> (sweep label, method, delta)."""
+    body, _, label = s.partition("@")
+    m, _, d = body.partition(":")
     if not d:
-        raise SystemExit(f"bad configuration {s!r}; use method:delta, e.g. kgw:2")
-    return m, float(d)
+        raise SystemExit(f"bad configuration {s!r}; use method:delta[@sweep], e.g. kgw:2 or canonmark:5@sweep_he_flip")
+    return (label or main_label), m, float(d)
 
 
 def default_pairs(groups):
@@ -138,35 +146,58 @@ def compare_pass(pa: list[dict], pb: list[dict], n_boot: int, rng) -> dict:
             "p": p_two_sided(boot), "n_problems": n}
 
 
-def name(cfg):
-    return f"{cfg[0]} δ={cfg[1]:g}"
+def name(cfg, show_sweep=False):
+    label, m, d = cfg
+    return f"{m} δ={d:g}" + (f" @{label}" if show_sweep else "")
 
 
 def main():
     a = parse()
-    d = Path(a.sweep)
-    groups, z, passes = load_sweep(d, a.suffix)
-    pairs = [(parse_cfg(x), parse_cfg(y)) for x, y in a.pair] if a.pair else default_pairs(groups)
+    dirs = [Path(a.sweep)] + [Path(x) for x in a.extra]
+    labels = [d.name for d in dirs]
+    if len(set(labels)) != len(labels):
+        raise SystemExit(f"sweep directories must have distinct names: {labels}")
+    main_label = labels[0]
+    groups, nones = {}, {}
+    for label, d in zip(labels, dirs):
+        g, z, passes = load_sweep(d, a.suffix)
+        for (m, delta), rs in g.items():
+            groups[(label, m, delta)] = [dict(r, _z=z[r["run"]], _pass=(passes or {}).get(r["run"])) for r in rs]
+        if passes and passes.get("none"):
+            nones[label] = passes["none"]
+    multi = len(dirs) > 1
+    warn = []
+    if multi and len({json.dumps(v, sort_keys=True) for v in nones.values()}) > 1:
+        warn.append("WARNING: the sweeps have different unwatermarked runs (none.jsonl); cross-sweep comparisons "
+                    "are then not paired on identical negatives. Copy the same none.jsonl into every sweep.")
+
+    if a.pair:
+        pairs = [(parse_cfg(x, main_label), parse_cfg(y, main_label)) for x, y in a.pair]
+    else:
+        main_groups = {(m, d): rs for (lab, m, d), rs in groups.items() if lab == main_label}
+        pairs = [((main_label, *A), (main_label, *B)) for A, B in default_pairs(main_groups)]
     if not pairs:
-        raise SystemExit("no pairs to compare (give --pair method:delta method:delta)")
+        raise SystemExit("no pairs to compare (give --pair method:delta[@sweep] method:delta[@sweep])")
     for cfg in {c for p in pairs for c in p}:
         if cfg not in groups:
-            raise SystemExit(f"{name(cfg)} not in this sweep; available: {', '.join(name(k) for k in sorted(groups))}")
-    any_run = next(iter(z.values()))
+            avail = ", ".join(name(k, True) for k in sorted(groups))
+            raise SystemExit(f"{name(cfg, True)} not found; available: {avail}")
+    show = multi and any(A[0] != main_label or B[0] != main_label or A[0] != B[0] for A, B in pairs)
+    any_run = next(iter(groups.values()))[0]["_z"]
     attacks = a.attacks or list(any_run)
     rng = np.random.default_rng(a.seed)
 
     results = []
     for A, B in pairs:
         ra, rb = groups[A], groups[B]
-        entry = {"a": name(A), "b": name(B), "keys_a": len(ra), "keys_b": len(rb), "auroc": {}}
+        entry = {"a": name(A, show), "b": name(B, show), "keys_a": len(ra), "keys_b": len(rb), "auroc": {}}
         for t in attacks:
-            za = [z[r["run"]][t] for r in ra]
-            zb = [z[r["run"]][t] for r in rb]
-            entry["auroc"][t] = compare_auroc(za, zb, a.negatives, a.n_boot, rng)
-        if passes is not None and all(r["run"] in passes and passes[r["run"]] for r in ra + rb):
-            entry["pass"] = compare_pass([passes[r["run"]] for r in ra], [passes[r["run"]] for r in rb], a.n_boot, rng)
+            entry["auroc"][t] = compare_auroc([r["_z"][t] for r in ra], [r["_z"][t] for r in rb],
+                                              a.negatives, a.n_boot, rng)
+        if all(r["_pass"] for r in ra + rb):
+            entry["pass"] = compare_pass([r["_pass"] for r in ra], [r["_pass"] for r in rb], a.n_boot, rng)
         results.append(entry)
+    passes = any(r["_pass"] for rs in groups.values() for r in rs) or None
 
     auc_tests = [(i, t) for i, e in enumerate(results) for t in e["auroc"]]
     for (i, t), padj in zip(auc_tests, holm([results[i]["auroc"][t]["p"] for i, t in auc_tests])):
@@ -180,6 +211,7 @@ def main():
              "p_holm: Holm-corrected across this table's AUROC tests (Pass@1 tests corrected separately).", ""]
     if not a.pair:
         lines += ["Pairs chosen automatically: each configuration vs the KGW δ with the closest mean Pass@1.", ""]
+    lines = warn + ([""] if warn else []) + lines
     lines += ["| A | B | condition | AUROC A | AUROC B | ΔAUROC [95% CI] | p | p_holm |", "|---|---|---|---|---|---|---|---|"]
     for e in results:
         for t, r in e["auroc"].items():
@@ -193,7 +225,7 @@ def main():
                          f"{r['d_pass']:+.3f} [{r['ci95'][0]:+.3f}, {r['ci95'][1]:+.3f}] | {r['p']:.4f} | {r['p_holm']:.4f} |")
     elif passes is None:
         lines += ["", "(No sweep_pass.json: rerun the sweep with --eval_only to add paired Pass@1 comparisons.)"]
-    out = Path(a.out) if a.out else d / f"compare{a.suffix}"
+    out = Path(a.out) if a.out else dirs[0] / (f"compare{a.suffix}" + ("_cross" if show else ""))
     out.with_suffix(".json").write_text(json.dumps(results, indent=1))
     out.with_suffix(".md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
